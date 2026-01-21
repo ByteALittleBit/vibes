@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D MOF Molecule Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #0a0a0c;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: white;
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .panel {
+            background: rgba(20, 20, 25, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            pointer-events: auto;
+            backdrop-filter: blur(5px);
+            margin-bottom: 10px;
+        }
+        h1 { margin: 0 0 10px 0; font-size: 1.2rem; color: #4fc3f7; }
+        p { margin: 5px 0; font-size: 0.85rem; opacity: 0.8; }
+        .controls { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+        label { font-size: 0.75rem; color: #aaa; }
+        input[type="range"] { width: 100%; cursor: pointer; }
+        .legend {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-top: 10px;
+        }
+        .legend-item { display: flex; align-items: center; gap: 5px; font-size: 0.75rem; }
+        .dot { width: 12px; height: 12px; border-radius: 50%; }
+        .metal { background-color: #4fc3f7; }
+        .linker { background-color: #ffca28; }
+        #canvas-container { width: 100vw; height: 100vh; cursor: move; }
+        .stats { position: absolute; bottom: 20px; right: 20px; font-size: 0.7rem; opacity: 0.5; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-overlay">
+        <div class="panel">
+            <h1>Metal-Organic Framework</h1>
+            <p>Visualizing a MOF-5 style lattice structure.</p>
+            
+            <div class="legend">
+                <div class="legend-item"><div class="dot metal"></div> Metal Node</div>
+                <div class="legend-item"><div class="dot linker"></div> Organic Linker</div>
+            </div>
+
+            <div class="controls">
+                <div>
+                    <label>Lattice Density: <span id="density-val">3x3x3</span></label>
+                    <input type="range" id="density-slider" min="1" max="5" value="3">
+                </div>
+                <div>
+                    <label>Linker Thickness</label>
+                    <input type="range" id="thickness-slider" min="1" max="10" value="4">
+                </div>
+                <div>
+                    <label>Rotation Speed</label>
+                    <input type="range" id="speed-slider" min="0" max="100" value="20">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="canvas-container"></div>
+    <div class="stats">Powered by Three.js | Left Click: Rotate | Scroll: Zoom | Right Click: Pan</div>
+
+    <script>
+        let scene, camera, renderer, mofGroup;
+        let rotationSpeed = 0.002;
+        let isMouseDown = false;
+        let mouseX = 0, mouseY = 0;
+        let targetRotationX = 0, targetRotationY = 0;
+
+        window.onload = function() {
+            init();
+            createMOF(3, 0.1);
+            animate();
+        };
+
+        function init() {
+            // Scene setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0a0a0c);
+
+            // Camera setup
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 10;
+            camera.position.y = 5;
+            camera.position.x = 5;
+            camera.lookAt(0, 0, 0);
+
+            // Renderer setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+            scene.add(ambientLight);
+
+            const mainLight = new THREE.PointLight(0xffffff, 0.8);
+            mainLight.position.set(10, 20, 10);
+            scene.add(mainLight);
+
+            const fillLight = new THREE.PointLight(0x4fc3f7, 0.5);
+            fillLight.position.set(-10, -10, -10);
+            scene.add(fillLight);
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize, false);
+            
+            const container = document.getElementById('canvas-container');
+            container.addEventListener('mousedown', (e) => { isMouseDown = true; mouseX = e.clientX; mouseY = e.clientY; });
+            window.addEventListener('mouseup', () => { isMouseDown = false; });
+            window.addEventListener('mousemove', onMouseMove);
+            container.addEventListener('wheel', onMouseWheel);
+
+            // UI Listeners
+            document.getElementById('density-slider').addEventListener('input', updateStructure);
+            document.getElementById('thickness-slider').addEventListener('input', updateStructure);
+            document.getElementById('speed-slider').addEventListener('input', (e) => {
+                rotationSpeed = e.target.value / 10000;
+            });
+        }
+
+        function createMOF(size, linkerThickness) {
+            if (mofGroup) scene.remove(mofGroup);
+            mofGroup = new THREE.Group();
+
+            const spacing = 4;
+            const nodeRadius = 0.6;
+            
+            // Materials
+            const metalMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0x4fc3f7, 
+                shininess: 100,
+                specular: 0x111111 
+            });
+            const linkerMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xffca28, 
+                transparent: true, 
+                opacity: 0.9 
+            });
+
+            const nodeGeom = new THREE.SphereGeometry(nodeRadius, 32, 32);
+
+            // Grid center offset
+            const offset = (size - 1) * spacing / 2;
+
+            for (let x = 0; x < size; x++) {
+                for (let y = 0; y < size; y++) {
+                    for (let z = 0; z < size; z++) {
+                        
+                        // Create Metal Node (Zn cluster)
+                        const node = new THREE.Mesh(nodeGeom, metalMaterial);
+                        const posX = x * spacing - offset;
+                        const posY = y * spacing - offset;
+                        const posZ = z * spacing - offset;
+                        node.position.set(posX, posY, posZ);
+                        mofGroup.add(node);
+
+                        // Create Linkers (Organic chains)
+                        // Linker in X direction
+                        if (x < size - 1) {
+                            addLinker(
+                                new THREE.Vector3(posX, posY, posZ),
+                                new THREE.Vector3(posX + spacing, posY, posZ),
+                                linkerThickness, linkerMaterial
+                            );
+                        }
+                        // Linker in Y direction
+                        if (y < size - 1) {
+                            addLinker(
+                                new THREE.Vector3(posX, posY, posZ),
+                                new THREE.Vector3(posX, posY + spacing, posZ),
+                                linkerThickness, linkerMaterial
+                            );
+                        }
+                        // Linker in Z direction
+                        if (z < size - 1) {
+                            addLinker(
+                                new THREE.Vector3(posX, posY, posZ),
+                                new THREE.Vector3(posX, posY, posZ + spacing),
+                                linkerThickness, linkerMaterial
+                            );
+                        }
+                    }
+                }
+            }
+
+            scene.add(mofGroup);
+        }
+
+        function addLinker(start, end, thickness, material) {
+            const distance = start.distanceTo(end);
+            const geometry = new THREE.CylinderGeometry(thickness, thickness, distance, 12);
+            const linker = new THREE.Mesh(geometry, material);
+            
+            // Position at midpoint
+            const midpoint = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+            linker.position.copy(midpoint);
+            
+            // Orient cylinder
+            const direction = new THREE.Vector3().subVectors(end, start).normalize();
+            const axis = new THREE.Vector3(0, 1, 0);
+            linker.quaternion.setFromUnitVectors(axis, direction);
+            
+            mofGroup.add(linker);
+        }
+
+        function updateStructure() {
+            const size = parseInt(document.getElementById('density-slider').value);
+            const thickness = parseInt(document.getElementById('thickness-slider').value) / 40;
+            document.getElementById('density-val').innerText = `${size}x${size}x${size}`;
+            createMOF(size, thickness);
+        }
+
+        function onMouseMove(event) {
+            if (!isMouseDown) return;
+            
+            const deltaX = event.clientX - mouseX;
+            const deltaY = event.clientY - mouseY;
+            
+            mofGroup.rotation.y += deltaX * 0.01;
+            mofGroup.rotation.x += deltaY * 0.01;
+            
+            mouseX = event.clientX;
+            mouseY = event.clientY;
+        }
+
+        function onMouseWheel(event) {
+            camera.position.z += event.deltaY * 0.01;
+            camera.position.z = Math.max(2, Math.min(50, camera.position.z));
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if (!isMouseDown) {
+                mofGroup.rotation.y += rotationSpeed;
+                mofGroup.rotation.x += rotationSpeed * 0.5;
+            }
+            
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
